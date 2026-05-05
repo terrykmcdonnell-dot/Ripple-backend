@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -5,14 +6,21 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import alarm, alarm_history
+from app.routers import alarm, alarm_history, revenuecat_webhook
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    get_settings()
+    settings = get_settings()
+    if settings.REVENUECAT_WEBHOOK_PUBLIC_URL:
+        logger.info(
+            "RevenueCat webhook URL (set this in RevenueCat dashboard): %s",
+            settings.REVENUECAT_WEBHOOK_PUBLIC_URL.strip(),
+        )
     yield
 
 
@@ -31,6 +39,7 @@ app.add_middleware(
 
 app.include_router(alarm.router)
 app.include_router(alarm_history.router)
+app.include_router(revenuecat_webhook.router)
 
 
 @app.get("/health")
