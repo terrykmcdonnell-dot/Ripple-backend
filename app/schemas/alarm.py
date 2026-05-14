@@ -11,6 +11,7 @@ class AlarmCreate(BaseModel):
     interval: int = Field(description="Repeat interval magnitude")
     unit: str
     category: str = Field(description="Category name; resolved to id via the category table")
+    sound: str | None = Field(default=None, description="Human-readable preset name (app sound picker labels)")
     is_enabled: bool = True
 
 
@@ -31,6 +32,10 @@ class AlarmUpdate(BaseModel):
         default=None,
         description="Category name; resolved to id via the category table",
     )
+    sound: Optional[str] = Field(
+        default=None,
+        description="Human-readable preset name (app sound picker labels)",
+    )
 
 
 class AlarmResponse(BaseModel):
@@ -44,3 +49,4 @@ class AlarmResponse(BaseModel):
     unit: str
     category: str = Field(description="Category display name from the category table")
     is_enabled: bool
+    sound: str | None = Field(default=None, description="Human-readable preset name stored on the alarm row")
