@@ -2,6 +2,8 @@
 
 FastAPI service for Ripple. It exposes HTTP APIs and uses Supabase (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`).
 
+**Default listen port:** `8001` (set via `uvicorn --port`; production nginx should proxy to `http://127.0.0.1:8001`).
+
 ## Requirements
 
 - **OS:** Ubuntu 24.04 LTS (or compatible)
@@ -72,12 +74,24 @@ Apply any SQL migrations in `supabase/migrations/` to your Supabase project when
 
 ```bash
 cd /opt/ripple-backend
-sudo -u ripple .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+sudo -u ripple .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
-Check: `curl -s http://127.0.0.1:8000/health` should return JSON with `"status":"ok"`. Stop with Ctrl+C.
+Check: `curl -s http://127.0.0.1:8001/health` should return JSON with `"status":"ok"`. Stop with Ctrl+C.
 
 **CORS:** `app/main.py` currently allows `http://localhost:8081` and `http://127.0.0.1:8081`. For a production web origin, update `allow_origins` (or make it configurable) before relying on browser clients from another host.
+
+---
+
+## Local development
+
+From the repo root (with `.venv` activated):
+
+```bash
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
+```
+
+Point the mobile app at `http://localhost:8001` (or your LAN IP on a physical device).
 
 ---
 
@@ -85,7 +99,13 @@ Check: `curl -s http://127.0.0.1:8000/health` should return JSON with `"status":
 
 ### 1. Unit file
 
-Create `/etc/systemd/system/ripple-backend.service`:
+Copy the template from this repo, or create `/etc/systemd/system/ripple-backend.service`:
+
+```bash
+sudo cp deploy/ripple-backend.service /etc/systemd/system/ripple-backend.service
+```
+
+Or create `/etc/systemd/system/ripple-backend.service` manually:
 
 ```ini
 [Unit]
@@ -101,7 +121,7 @@ WorkingDirectory=/opt/ripple-backend
 EnvironmentFile=/opt/ripple-backend/.env
 ExecStart=/opt/ripple-backend/.venv/bin/uvicorn app.main:app \
     --host 127.0.0.1 \
-    --port 8000 \
+    --port 8001 \
     --workers 2
 Restart=on-failure
 RestartSec=5
@@ -116,9 +136,11 @@ WantedBy=multi-user.target
 
 Notes:
 
-- **`--host 127.0.0.1`:** binds only on loopback. Put **nginx** (or another reverse proxy) in front for TLS and public access, proxying to `http://127.0.0.1:8000`.
+- **`--host 127.0.0.1`:** binds only on loopback. Put **nginx** (or another reverse proxy) in front for TLS and public access, proxying to `http://127.0.0.1:8001`.
 - To expose the app directly on all interfaces (e.g. no reverse proxy), use `--host 0.0.0.0` and open the port in your firewall.
 - **`--workers`:** Uvicorn worker processes. You can set `1` for lighter servers or increase for CPU-bound workloads; each worker is a separate process.
+
+If you already run on port `8000`, change `--port` to `8001` in the unit file, update any **nginx** `proxy_pass` (e.g. `http://127.0.0.1:8001`), then `sudo systemctl daemon-reload && sudo systemctl restart ripple-backend.service`.
 
 ### 2. Enable and start
 
@@ -192,7 +214,7 @@ sudo systemctl status ripple-backend.service
 ### 6. Smoke check
 
 ```bash
-curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8001/health
 ```
 
 If something fails, inspect logs: `journalctl -u ripple-backend.service -n 100 --no-pager`.
@@ -200,7 +222,7 @@ If something fails, inspect logs: `journalctl -u ripple-backend.service -n 100 -
 **Summary one-liner** (after `cd /opt/ripple-backend` and when you always want pip + restart):
 
 ```bash
-cd /opt/ripple-backend && sudo -u ripple git pull && sudo -u ripple .venv/bin/pip install -r requirements.txt && sudo systemctl restart ripple-backend.service && curl -s http://127.0.0.1:8000/health
+cd /opt/ripple-backend && sudo -u ripple git pull && sudo -u ripple .venv/bin/pip install -r requirements.txt && sudo systemctl restart ripple-backend.service && curl -s http://127.0.0.1:8001/health
 ```
 
 ---
