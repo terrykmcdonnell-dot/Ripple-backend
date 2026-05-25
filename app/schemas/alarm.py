@@ -1,7 +1,34 @@
 from datetime import datetime
+import re
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+_DATETIME_PREFIX_RE = re.compile(
+    r"^\s*([0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}"
+    r"(?::[0-9]{2}(?:\.[0-9]{1,6})?)?"
+    r"(?:Z|[+-][0-9]{2}:?[0-9]{2})?)"
+)
+
+
+def _coerce_scheduled_at(value: object) -> object:
+    """Accept common JS/iOS timestamp variants before Pydantic datetime parsing."""
+    if not isinstance(value, str):
+        return value
+
+    raw = value.strip().strip('"').strip("'")
+    match = _DATETIME_PREFIX_RE.match(raw)
+    if match:
+        raw = match.group(1)
+    raw = raw.replace(" ", "T")
+    # Python/Pydantic accept `+00:00` consistently; normalize JS `Z`.
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    # Normalize offsets like +0000 to +00:00.
+    if re.search(r"[+-][0-9]{4}$", raw):
+        raw = f"{raw[:-2]}:{raw[-2:]}"
+    return raw
 
 
 class AlarmCreate(BaseModel):
@@ -13,6 +40,11 @@ class AlarmCreate(BaseModel):
     category: str = Field(description="Category name; resolved to id via the category table")
     sound: str | None = Field(default=None, description="Human-readable preset name (app sound picker labels)")
     is_enabled: bool = True
+
+    @field_validator("scheduled_at", mode="before")
+    @classmethod
+    def normalize_scheduled_at(cls, value: object) -> object:
+        return _coerce_scheduled_at(value)
 
 
 class AlarmToggle(BaseModel):
@@ -36,6 +68,11 @@ class AlarmUpdate(BaseModel):
         default=None,
         description="Human-readable preset name (app sound picker labels)",
     )
+
+    @field_validator("scheduled_at", mode="before")
+    @classmethod
+    def normalize_scheduled_at(cls, value: object) -> object:
+        return _coerce_scheduled_at(value)
 
 
 class AlarmResponse(BaseModel):

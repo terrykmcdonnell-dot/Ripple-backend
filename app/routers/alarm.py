@@ -127,10 +127,14 @@ def get_alarm(alarm_id: int, supabase: Client = Depends(get_supabase)) -> AlarmR
             .execute()
         )
     except APIError as e:
+        err = str(e).lower()
+        if "0 rows" in err or "pgrst116" in err:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alarm not found") from e
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
-    if result is None:
+    row = result.data if result is not None else None
+    if not isinstance(row, dict):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alarm not found")
-    return _alarm_rows_to_responses(supabase, [result.data])[0]
+    return _alarm_rows_to_responses(supabase, [row])[0]
 
 
 @router.post("/", response_model=AlarmResponse, status_code=status.HTTP_201_CREATED)
@@ -167,6 +171,24 @@ def update_alarm(
     payload: AlarmUpdate,
     supabase: Client = Depends(get_supabase),
 ) -> AlarmResponse:
+    return _update_alarm_with_payload(alarm_id, payload, supabase)
+
+
+@router.post("/{alarm_id}/update", response_model=AlarmResponse)
+def update_alarm_via_post(
+    alarm_id: int,
+    payload: AlarmUpdate,
+    supabase: Client = Depends(get_supabase),
+) -> AlarmResponse:
+    """POST compatibility endpoint for clients/proxies that reject PATCH."""
+    return _update_alarm_with_payload(alarm_id, payload, supabase)
+
+
+def _update_alarm_with_payload(
+    alarm_id: int,
+    payload: AlarmUpdate,
+    supabase: Client,
+) -> AlarmResponse:
     patch = payload.model_dump(mode="json", exclude_unset=True)
     if not patch:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
@@ -183,6 +205,16 @@ def update_alarm(
 
 @router.delete("/{alarm_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_alarm(alarm_id: int, supabase: Client = Depends(get_supabase)) -> None:
+    _delete_alarm_by_id(alarm_id, supabase)
+
+
+@router.post("/{alarm_id}/delete", status_code=status.HTTP_204_NO_CONTENT)
+def delete_alarm_via_post(alarm_id: int, supabase: Client = Depends(get_supabase)) -> None:
+    """POST compatibility endpoint for clients/proxies that reject DELETE."""
+    _delete_alarm_by_id(alarm_id, supabase)
+
+
+def _delete_alarm_by_id(alarm_id: int, supabase: Client) -> None:
     try:
         existing = (
             supabase.table(ALARMS_TABLE)

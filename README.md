@@ -134,12 +134,73 @@ Logs:
 journalctl -u ripple-backend.service -f
 ```
 
-After code or dependency updates:
+---
+
+## Deploy updates (pull latest code and restart)
+
+Use this when the app is already installed and you only need the newest code from Git and a service restart.
+
+SSH into the server (for example as `ubuntu`), then:
+
+### 1. Pull the latest code
+
+The app directory should be owned by the `ripple` user (see [Install on Ubuntu 24](#install-on-ubuntu-24)). Pull as that user so file permissions stay correct:
+
+```bash
+cd /opt/ripple-backend
+sudo -u ripple git pull
+```
+
+If Git asks for credentials, configure access for the `ripple` user (deploy key, credential helper, or `git remote` URL with a token—never commit secrets).
+
+Resolve any merge conflicts before continuing. If you deploy a **specific branch**:
+
+```bash
+sudo -u ripple git fetch origin
+sudo -u ripple git checkout YOUR_BRANCH
+sudo -u ripple git pull origin YOUR_BRANCH
+```
+
+### 2. Install Python dependencies (when `requirements.txt` changed)
 
 ```bash
 cd /opt/ripple-backend
 sudo -u ripple .venv/bin/pip install -r requirements.txt
+```
+
+Skip this step if only application code changed and `requirements.txt` is unchanged.
+
+### 3. Database migrations (if any)
+
+If the release adds SQL under `supabase/migrations/`, apply those changes in the Supabase SQL editor (or your migration process) before or right after deploy, as your team prefers.
+
+### 4. Reload systemd only if you edited the unit file
+
+```bash
+sudo systemctl daemon-reload
+```
+
+Not needed for a normal code-only deploy.
+
+### 5. Restart the backend
+
+```bash
 sudo systemctl restart ripple-backend.service
+sudo systemctl status ripple-backend.service
+```
+
+### 6. Smoke check
+
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+
+If something fails, inspect logs: `journalctl -u ripple-backend.service -n 100 --no-pager`.
+
+**Summary one-liner** (after `cd /opt/ripple-backend` and when you always want pip + restart):
+
+```bash
+cd /opt/ripple-backend && sudo -u ripple git pull && sudo -u ripple .venv/bin/pip install -r requirements.txt && sudo systemctl restart ripple-backend.service && curl -s http://127.0.0.1:8000/health
 ```
 
 ---
