@@ -13,44 +13,75 @@ ALARMS_TABLE = "alarms"
 CATEGORY_TABLE = "category"
 
 
-def _resolve_category_id(supabase: Client, name: str) -> int:
+def _resolve_category_id_by_name(supabase: Client, user_id: int, name: str) -> int:
+    clean = name.strip()
+    if not clean:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="category is required")
     try:
         result = (
             supabase.table(CATEGORY_TABLE)
             .select("id")
-            .eq("name", name)
-            .maybe_single()
+            .or_(f"user_id.is.null,user_id.eq.{user_id}")
+            .eq("is_archived", False)
+            .ilike("name", clean)
             .execute()
         )
     except APIError as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
-    if result is None:
+    rows = result.data or []
+    if not rows:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'Category "{name}" not found',
+            detail=f'Category "{clean}" not found',
         )
-    row = result.data
-    assert isinstance(row, dict)
-    return int(row["id"])
+    # Prefer a user's category over a system category when names overlap.
+    rows.sort(key=lambda r: 0 if r.get("user_id") is not None else 1)
+    return int(rows[0]["id"])
 
 
-def _category_names_by_ids(supabase: Client, ids: list[int]) -> dict[int, str]:
-    """Load category names keyed by category id."""
+def _resolve_category_id(supabase: Client, user_id: int, category_id: int | None, category_name: str | None) -> int:
+    if category_id is not None:
+        try:
+            result = (
+                supabase.table(CATEGORY_TABLE)
+                .select("id,user_id,is_archived")
+                .eq("id", category_id)
+                .maybe_single()
+                .execute()
+            )
+        except APIError as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+        row = result.data if result is not None else None
+        if not isinstance(row, dict) or bool(row.get("is_archived", False)):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+        owner = row.get("user_id")
+        if owner is not None and int(owner) != user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Category does not belong to this user")
+        return int(row["id"])
+
+    if category_name is not None:
+        return _resolve_category_id_by_name(supabase, user_id, category_name)
+
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="category_id or category is required")
+
+
+def _categories_by_ids(supabase: Client, ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Load category metadata keyed by category id."""
     if not ids:
         return {}
     unique_ids = list(dict.fromkeys(ids))
     try:
         result = (
             supabase.table(CATEGORY_TABLE)
-            .select("id,name")
+            .select("id,name,icon,color_key")
             .in_("id", unique_ids)
             .execute()
         )
     except APIError as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
-    mapping: dict[int, str] = {}
+    mapping: dict[int, dict[str, Any]] = {}
     for row in result.data or []:
-        mapping[int(row["id"])] = str(row["name"])
+        mapping[int(row["id"])] = row
     return mapping
 
 
@@ -58,17 +89,27 @@ def _alarm_rows_to_responses(supabase: Client, rows: list[dict[str, Any]]) -> li
     if not rows:
         return []
     cat_ids = [int(r["category"]) for r in rows]
-    names = _category_names_by_ids(supabase, cat_ids)
+    categories = _categories_by_ids(supabase, cat_ids)
     out: list[AlarmResponse] = []
     for row in rows:
         cid = int(row["category"])
-        name = names.get(cid)
-        if name is None:
+        category = categories.get(cid)
+        if category is None:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Category id {cid} has no row in the category table",
             )
-        out.append(AlarmResponse.model_validate({**row, "category": name}))
+        out.append(
+            AlarmResponse.model_validate(
+                {
+                    **row,
+                    "category": str(category.get("name") or ""),
+                    "category_id": cid,
+                    "category_icon": str(category.get("icon") or "⭐"),
+                    "category_color_key": str(category.get("color_key") or "purple"),
+                }
+            )
+        )
     return out
 
 
@@ -139,8 +180,8 @@ def get_alarm(alarm_id: int, supabase: Client = Depends(get_supabase)) -> AlarmR
 
 @router.post("/", response_model=AlarmResponse, status_code=status.HTTP_201_CREATED)
 def create_alarm(payload: AlarmCreate, supabase: Client = Depends(get_supabase)) -> AlarmResponse:
-    category_id = _resolve_category_id(supabase, payload.category)
-    insert_payload = payload.model_dump(mode="json", exclude={"category"})
+    category_id = _resolve_category_id(supabase, payload.user_id, payload.category_id, payload.category)
+    insert_payload = payload.model_dump(mode="json", exclude={"category", "category_id"})
     insert_payload["category"] = category_id
     try:
         result = supabase.table(ALARMS_TABLE).insert(insert_payload).execute()
@@ -192,14 +233,26 @@ def _update_alarm_with_payload(
     patch = payload.model_dump(mode="json", exclude_unset=True)
     if not patch:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
-    if "category" in patch:
-        category_name = patch.pop("category")
-        if not isinstance(category_name, str):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="category must be a category name string",
-            )
-        patch["category"] = _resolve_category_id(supabase, category_name)
+    if "category" in patch or "category_id" in patch:
+        category_name = patch.pop("category", None)
+        category_id = patch.pop("category_id", None)
+        user_id = patch.get("user_id")
+        if user_id is None:
+            try:
+                existing = (
+                    supabase.table(ALARMS_TABLE)
+                    .select("user_id")
+                    .eq("id", alarm_id)
+                    .maybe_single()
+                    .execute()
+                )
+            except APIError as e:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+            row = existing.data if existing is not None else None
+            if not isinstance(row, dict):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alarm not found")
+            user_id = int(row["user_id"])
+        patch["category"] = _resolve_category_id(supabase, int(user_id), category_id, category_name)
     return _run_alarm_update(supabase, alarm_id, patch)
 
 
