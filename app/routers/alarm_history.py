@@ -125,6 +125,22 @@ def _row_to_response(row: dict[str, Any]) -> AlarmHistoryResponse:
     return AlarmHistoryResponse.model_validate(row)
 
 
+def delete_history_for_alarm(supabase: Client, alarm_id: int) -> None:
+    """Remove all history rows tied to a deleted alarm."""
+    try:
+        supabase.table(HISTORY_TABLE).delete().eq("alarm_id", alarm_id).execute()
+    except APIError as e:
+        _raise_from_api_error(e, context="alarm_history: delete by alarm")
+
+
+def delete_all_history_for_user(supabase: Client, user_id: int) -> None:
+    """Remove every history row for the signed-in user."""
+    try:
+        supabase.table(HISTORY_TABLE).delete().eq("user_id", user_id).execute()
+    except APIError as e:
+        _raise_from_api_error(e, context="alarm_history: clear all")
+
+
 def _run_history_update(
     supabase: Client,
     *,
@@ -182,6 +198,23 @@ def list_alarm_history(
         _raise_from_api_error(e, context="alarm_history: list")
     rows = result.data or []
     return [_row_to_response(r) for r in rows]
+
+
+@router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
+def clear_alarm_history(
+    user_id: int = Query(..., description="public.users.id"),
+    supabase: Client = Depends(get_supabase),
+) -> None:
+    delete_all_history_for_user(supabase, user_id)
+
+
+@router.post("/clear", status_code=status.HTTP_204_NO_CONTENT)
+def clear_alarm_history_via_post(
+    user_id: int = Query(..., description="public.users.id"),
+    supabase: Client = Depends(get_supabase),
+) -> None:
+    """POST compatibility endpoint for clients/proxies that reject DELETE."""
+    delete_all_history_for_user(supabase, user_id)
 
 
 def _merge_and_respond(

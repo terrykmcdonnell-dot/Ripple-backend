@@ -5,6 +5,7 @@ from postgrest.exceptions import APIError
 from supabase import Client
 
 from app.schemas.alarm import AlarmCreate, AlarmResponse, AlarmToggle, AlarmUpdate
+from app.routers.alarm_history import delete_history_for_alarm
 from app.supabase_db import get_supabase
 
 router = APIRouter(prefix="/api/alarm", tags=["alarm"])
@@ -281,6 +282,7 @@ def _delete_alarm_by_id(alarm_id: int, supabase: Client) -> None:
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alarm not found")
     try:
+        delete_history_for_alarm(supabase, alarm_id)
         supabase.table(ALARMS_TABLE).delete().eq("id", alarm_id).execute()
     except APIError as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
