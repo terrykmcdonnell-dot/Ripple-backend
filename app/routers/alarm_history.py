@@ -230,8 +230,11 @@ def _merge_and_respond(
         return _row_to_response(existing)
     if payload.status == "missed" and prev_status == "missed":
         return _row_to_response(existing)
+    # Snooze re-ring dismissed: upgrade the original snoozed row.
+    if payload.status == "dismissed" and prev_status == "snoozed":
+        pass
     # Duplicate terminal events (e.g. notification cleared from tray) must not move action_at.
-    if payload.status in ("dismissed", "snoozed") and prev_status in ("dismissed", "snoozed"):
+    elif payload.status in ("dismissed", "snoozed") and prev_status in ("dismissed", "snoozed"):
         return _row_to_response(existing)
 
     patch = {
