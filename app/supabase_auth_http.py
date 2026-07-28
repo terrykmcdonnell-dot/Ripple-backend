@@ -78,6 +78,62 @@ async def fetch_auth_user_email_from_access_token(
     return user["email"] if user else None
 
 
+class AuthAdminUserCreateError(Exception):
+    """Raised when Supabase Auth admin user creation fails."""
+
+    def __init__(self, status_code: int, error_code: str | None, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+        self.message = message
+
+
+async def create_auth_admin_user(
+    sb_url: str,
+    service_key: str,
+    *,
+    email: str,
+    password: str,
+    name: str,
+) -> dict[str, str]:
+    """Create a confirmed email/password user via POST /auth/v1/admin/users (service role)."""
+    normalized_email = email.strip().lower()
+    url = f"{sb_url.rstrip('/')}/auth/v1/admin/users"
+    headers = {
+        "Authorization": f"Bearer {service_key}",
+        "apikey": service_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "email": normalized_email,
+        "password": password,
+        "email_confirm": True,
+        "user_metadata": {"name": name.strip()},
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.post(url, headers=headers, json=payload)
+    if r.status_code == 200:
+        data = r.json()
+        uid = (data.get("id") or "").strip()
+        if uid:
+            return {"id": uid, "email": normalized_email}
+        raise AuthAdminUserCreateError(r.status_code, None, "Auth user created without id")
+    error_code: str | None = None
+    message = r.text[:500]
+    try:
+        body = r.json()
+        if isinstance(body, dict):
+            error_code = (body.get("error_code") or body.get("code") or None)
+            if isinstance(error_code, str):
+                error_code = error_code.strip() or None
+            msg = body.get("msg") or body.get("message") or body.get("error_description")
+            if isinstance(msg, str) and msg.strip():
+                message = msg.strip()
+    except Exception:
+        pass
+    raise AuthAdminUserCreateError(r.status_code, error_code, message)
+
+
 async def delete_auth_admin_user(sb_url: str, service_key: str, auth_user_id: str) -> bool:
     """Delete Supabase Auth user via service role (DELETE /auth/v1/admin/users/{id})."""
     uid = auth_user_id.strip()
