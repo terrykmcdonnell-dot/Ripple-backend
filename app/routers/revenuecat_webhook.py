@@ -63,6 +63,8 @@ def _derive_plan(product_id: str | None, period_type: str | None) -> str:
     if not product_id:
         return "unknown"
     pid = product_id.lower()
+    if any(x in pid for x in ("lifetime", "forever", "one_time", "onetime")):
+        return "lifetime"
     if "month" in pid:
         return "monthly"
     if any(x in pid for x in ("annual", "year", "yearly", "_yr")):
@@ -130,7 +132,14 @@ def _compute_rc_fields(event: dict[str, Any], pro_entitlement: str) -> tuple[str
         entitled = has_pro or etype == "TEMPORARY_ENTITLEMENT_GRANT"
         if (
             not entitled
-            and etype in ("INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION", "PRODUCT_CHANGE")
+            and etype
+            in (
+                "INITIAL_PURCHASE",
+                "RENEWAL",
+                "UNCANCELLATION",
+                "PRODUCT_CHANGE",
+                "NON_RENEWING_PURCHASE",
+            )
             and product_id
         ):
             entitled = True
