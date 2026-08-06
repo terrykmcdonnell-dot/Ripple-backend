@@ -106,6 +106,11 @@ def _compute_rc_fields(event: dict[str, Any], pro_entitlement: str) -> tuple[str
             return None
         return customer_id, status, plan
 
+    if etype in ("REFUND",):
+        if not customer_id:
+            return None
+        return customer_id, "expired", plan
+
     if etype == "BILLING_ISSUE":
         if not customer_id:
             return None
