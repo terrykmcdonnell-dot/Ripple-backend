@@ -8,12 +8,15 @@ Configure in `.env`:
   REVENUECAT_WEBHOOK_AUTHORIZATION — optional; must match RevenueCat dashboard header exactly
   REVENUECAT_ENTITLEMENT_ID — entitlement id (default pro)
 
-public.users is matched via Supabase Auth admin lookup: event app_user_id → auth user → email → users.email.
+public.users is matched by Supabase Auth id (`users.auth_user_id` = RevenueCat `app_user_id`
+after logIn). Email is only a fallback for rows created before that column existed.
+A missing row is inserted. Anonymous RevenueCat ids are ignored.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -156,10 +159,22 @@ def _compute_rc_fields(event: dict[str, Any], pro_entitlement: str) -> tuple[str
     return customer_id, "inactive", plan
 
 
-async def _auth_email_for_app_user_id(sb_url: str, service_key: str, app_user_id: str) -> str | None:
-    """Resolve Supabase Auth user email from RevenueCat app_user_id (Supabase Auth UUID)."""
+_AUTH_USER_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _is_supabase_auth_id(app_user_id: str) -> bool:
+    """RevenueCat anonymous ids (`$RCAnonymousID:…`) are not Supabase users."""
+    return _AUTH_USER_ID_RE.fullmatch(app_user_id.strip()) is not None
+
+
+async def _auth_profile_for_app_user_id(
+    sb_url: str, service_key: str, app_user_id: str
+) -> dict[str, str] | None:
+    """Auth admin user for a Supabase id. Email may be empty."""
     uid = app_user_id.strip()
-    if not uid:
+    if not _is_supabase_auth_id(uid):
         return None
     url = f"{sb_url.rstrip('/')}/auth/v1/admin/users/{uid}"
     headers = {
@@ -176,7 +191,16 @@ async def _auth_email_for_app_user_id(sb_url: str, service_key: str, app_user_id
     if not isinstance(user, dict):
         return None
     email = (user.get("email") or "").strip().lower()
-    return email or None
+    meta = user.get("user_metadata") if isinstance(user.get("user_metadata"), dict) else {}
+    name = ""
+    for key in ("full_name", "name"):
+        raw = meta.get(key)
+        if isinstance(raw, str) and raw.strip():
+            name = raw.strip()
+            break
+    if not name and email and "@" in email:
+        name = email.split("@", 1)[0]
+    return {"id": uid, "email": email, "name": name or "User"}
 
 
 def _target_app_user_ids(event: dict[str, Any]) -> list[str]:
@@ -193,14 +217,66 @@ def _transfer_destination_ids(event: dict[str, Any]) -> list[str]:
     return [str(x).strip() for x in raw if str(x).strip()]
 
 
-async def _apply_update(email: str, rc_customer_id: str, status: str, plan: str) -> None:
-    sb = get_supabase()
-    payload = {
+def _rc_payload(rc_customer_id: str, status: str, plan: str) -> dict[str, str]:
+    return {
         "rc_customer_id": rc_customer_id,
         "rc_subscription_status": status,
         "rc_subscription_plan": plan,
     }
-    sb.table("users").update(payload).eq("email", email).execute()
+
+
+def _row_id(result: Any) -> int | None:
+    data = getattr(result, "data", None)
+    if isinstance(data, dict) and data.get("id") is not None:
+        return int(data["id"])
+    return None
+
+
+async def _upsert_subscription_for_auth_user(
+    sb_url: str,
+    service_key: str,
+    auth_user_id: str,
+    rc_customer_id: str,
+    status: str,
+    plan: str,
+) -> bool:
+    """
+    Write RevenueCat columns onto public.users for this Supabase Auth id.
+    Creates the row when missing. Existing rows that predate auth_user_id are
+    linked by email once, then updated by id.
+    """
+    uid = auth_user_id.strip()
+    if not _is_supabase_auth_id(uid):
+        logger.info("RevenueCat webhook: skip non-auth app_user_id=%s", uid)
+        return False
+
+    sb = get_supabase()
+    payload = _rc_payload(rc_customer_id, status, plan)
+    by_auth = sb.table("users").select("id").eq("auth_user_id", uid).maybe_single().execute()
+    row_id = _row_id(by_auth)
+    if row_id is not None:
+        sb.table("users").update(payload).eq("id", row_id).execute()
+        return True
+
+    profile = await _auth_profile_for_app_user_id(sb_url, service_key, uid)
+    email = (profile or {}).get("email") or ""
+    if email:
+        by_email = sb.table("users").select("id").eq("email", email).maybe_single().execute()
+        row_id = _row_id(by_email)
+        if row_id is not None:
+            sb.table("users").update({**payload, "auth_user_id": uid}).eq("id", row_id).execute()
+            return True
+
+    insert_row: dict[str, Any] = {
+        "auth_user_id": uid,
+        "name": (profile or {}).get("name") or "User",
+        "password": "",
+        **payload,
+    }
+    if email:
+        insert_row["email"] = email
+    sb.table("users").insert(insert_row).execute()
+    return True
 
 
 @router.post("/revenuecat")
@@ -230,11 +306,12 @@ async def revenuecat_webhook(
         sb_key = settings.SUPABASE_SECRET_KEY
         rc_customer_id = str(event.get("original_app_user_id") or "").strip()
         for uid in _transfer_destination_ids(event):
-            email = await _auth_email_for_app_user_id(sb_url, sb_key, uid)
-            if not email:
-                logger.warning("TRANSFER: no email for app_user_id=%s", uid)
-                continue
-            await _apply_update(email, rc_customer_id or uid, "active", "unknown")
+            try:
+                await _upsert_subscription_for_auth_user(
+                    sb_url, sb_key, uid, rc_customer_id or uid, "active", "unknown"
+                )
+            except Exception as exc:
+                logger.exception("TRANSFER failed for app_user_id=%s: %s", uid, exc)
         return {"status": "ok"}
 
     computed = _compute_rc_fields(event, pro_id)
@@ -253,15 +330,13 @@ async def revenuecat_webhook(
 
     updated = 0
     for uid in app_users:
-        email = await _auth_email_for_app_user_id(sb_url, sb_key, uid)
-        if not email:
-            logger.warning("No email for RevenueCat app_user_id=%s (event=%s)", uid, event.get("type"))
-            continue
         try:
-            await _apply_update(email, rc_customer_id, rc_status, rc_plan)
-            updated += 1
+            if await _upsert_subscription_for_auth_user(
+                sb_url, sb_key, uid, rc_customer_id, rc_status, rc_plan
+            ):
+                updated += 1
         except Exception as exc:
-            logger.exception("Failed updating users row for %s: %s", email, exc)
+            logger.exception("Failed updating users row for app_user_id=%s: %s", uid, exc)
 
     logger.info(
         "RevenueCat webhook processed type=%s updated_rows=%s status=%s plan=%s",
