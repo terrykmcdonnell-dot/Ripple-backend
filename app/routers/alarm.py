@@ -184,8 +184,8 @@ def create_alarm(payload: AlarmCreate, supabase: Client = Depends(get_supabase))
     category_id = _resolve_category_id(supabase, payload.user_id, payload.category_id, payload.category)
     insert_payload = payload.model_dump(mode="json", exclude={"category", "category_id"})
     insert_payload["category"] = category_id
-    # v2 multi-time columns: omit when unused so single-time creates never depend on them.
-    for key in ("ring_times", "skipped_fires"):
+    # Optional v2 columns: omit when unused so plain creates never depend on them.
+    for key in ("ring_times", "skipped_fires", "retry_minutes"):
         if insert_payload.get(key) is None:
             insert_payload.pop(key, None)
     try:

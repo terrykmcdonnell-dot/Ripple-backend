@@ -72,6 +72,19 @@ def _normalize_skipped_fires(value: list[str] | None) -> list[str] | None:
     return [k for k, _ in ordered[-MAX_SKIPPED_FIRES:]]
 
 
+MIN_RETRY_MINUTES = 5
+MAX_RETRY_MINUTES = 60
+
+
+def _normalize_retry_minutes(value: int | None) -> int | None:
+    """Retry-until-dismissed gap in minutes; 0/None = off."""
+    if value is None or value == 0:
+        return None
+    if not MIN_RETRY_MINUTES <= value <= MAX_RETRY_MINUTES:
+        raise ValueError(f"retry_minutes must be between {MIN_RETRY_MINUTES} and {MAX_RETRY_MINUTES}")
+    return value
+
+
 class AlarmCreate(BaseModel):
     user_id: int
     label: str
@@ -87,6 +100,10 @@ class AlarmCreate(BaseModel):
         description='Local wall-clock ring times ("HH:mm"), first entry matches scheduled_at; null = single-time',
     )
     skipped_fires: list[str] | None = Field(default=None, description="ISO occurrence instants skipped by the user")
+    retry_minutes: int | None = Field(
+        default=None,
+        description="Re-ring gap in minutes when a ring is not dismissed; null = off",
+    )
 
     @field_validator("scheduled_at", mode="before")
     @classmethod
@@ -102,6 +119,11 @@ class AlarmCreate(BaseModel):
     @classmethod
     def validate_skipped_fires(cls, value: list[str] | None) -> list[str] | None:
         return _normalize_skipped_fires(value)
+
+    @field_validator("retry_minutes")
+    @classmethod
+    def validate_retry_minutes(cls, value: int | None) -> int | None:
+        return _normalize_retry_minutes(value)
 
 
 class AlarmToggle(BaseModel):
@@ -131,6 +153,10 @@ class AlarmUpdate(BaseModel):
         description='Local wall-clock ring times ("HH:mm"); send null to make the alarm single-time',
     )
     skipped_fires: Optional[list[str]] = Field(default=None, description="ISO occurrence instants skipped by the user")
+    retry_minutes: Optional[int] = Field(
+        default=None,
+        description="Re-ring gap in minutes when a ring is not dismissed; send null (or 0) to turn off",
+    )
 
     @field_validator("scheduled_at", mode="before")
     @classmethod
@@ -146,6 +172,11 @@ class AlarmUpdate(BaseModel):
     @classmethod
     def validate_skipped_fires(cls, value: list[str] | None) -> list[str] | None:
         return _normalize_skipped_fires(value)
+
+    @field_validator("retry_minutes")
+    @classmethod
+    def validate_retry_minutes(cls, value: int | None) -> int | None:
+        return _normalize_retry_minutes(value)
 
 
 class AlarmResponse(BaseModel):
@@ -165,3 +196,4 @@ class AlarmResponse(BaseModel):
     sound: str | None = Field(default=None, description="Human-readable preset name stored on the alarm row")
     ring_times: list[str] | None = Field(default=None, description='Local wall-clock ring times ("HH:mm"); null = single-time')
     skipped_fires: list[str] | None = Field(default=None, description="ISO occurrence instants skipped by the user")
+    retry_minutes: int | None = Field(default=None, description="Re-ring gap in minutes; null = off")
